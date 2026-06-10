@@ -184,6 +184,10 @@ def carregar_dados():
     if 'Data RC' in df_real.columns:
         df_real['Data RC'] = pd.to_datetime(df_real['Data RC'], dayfirst=True, errors='coerce')
 
+    # Descartar registros onde a AF (Autorização de Fornecimento) foi CANCELADA
+    if 'Status AF' in df_real.columns:
+        df_real = df_real[df_real['Status AF'] != 'CANCELADA']
+
     # --- Base de Previstos ---
     try:
         df_prev = pd.read_csv('previstos_dashboard.csv', sep=';', dtype=str, low_memory=False)
@@ -231,10 +235,11 @@ def carregar_dados():
     # Dicionário de secretarias
     dic_sec = {
         5: "5 - GP", 10: "10 - SG", 15: "15 - SAJ", 20: "20 - SGAF",
-        30: "30 - SGO", 40: "40 - SEC", 45: "45 - SEQV", 50: "50 - SASC",
+        30: "30 - SEURBS", 35: "35 - SGO", 40: "40 - SEC", 45: "45 - SEQV", 50: "50 - SASC",
         55: "55 - SMC", 60: "60 - SS", 65: "65 - SEMOB", 70: "70 - SEPAC",
         75: "75 - SIDE", 80: "80 - EG", 90: "90 - SHRF"
     }
+    
     for df in [df_real, df_prev]:
         if 'Secr. RC' in df.columns:
             nums = df['Secr. RC'].str.extract(r'(\d+)')[0].astype(float)
@@ -387,10 +392,8 @@ df_m.drop(columns=['Descrição Material RC_x', 'Descrição Material RC_y'], in
 global_prev_prices = grp_prev.groupby('Material RC')[v_unit_prev_col].first().to_dict()
 global_real_prices = grp_real.groupby('Material RC')[v_unit_real_col].first().to_dict()
 
-# Determinar valor unitário definitivo para cada linha de df_m
-df_m['Vlr Unitário'] = df_m[v_unit_prev_col].replace(0, np.nan)
-df_m['Vlr Unitário'] = df_m['Vlr Unitário'].fillna(df_m[v_unit_real_col].replace(0, np.nan))
-df_m['Vlr Unitário'] = df_m['Vlr Unitário'].fillna(df_m['Material RC'].map(global_prev_prices))
+# Determinar valor unitário definitivo APENAS pelo preço praticado na base de consumo (Val.Unit RC)
+df_m['Vlr Unitário'] = df_m[v_unit_real_col].replace(0, np.nan)
 df_m['Vlr Unitário'] = df_m['Vlr Unitário'].fillna(df_m['Material RC'].map(global_real_prices))
 df_m['Vlr Unitário'] = df_m['Vlr Unitário'].fillna(0)
 
@@ -410,18 +413,43 @@ df_m['Saldo'] = df_m['Métrica Prevista'] - df_m['Métrica RC']
 df_m['% Consumo'] = np.where(df_m['Métrica Prevista'] > 0, df_m['Métrica RC'] / df_m['Métrica Prevista'] * 100, 0)
 
 # ==========================================================
-# 5. KPIs
+# 5. TABELA GERAL POR ITEM (RESUMO EXECUTIVO COM CAPPING CONTRATUAL A 100%)
 # ==========================================================
-total_prev = df_m['Métrica Prevista'].sum()
-total_real = df_m['Métrica RC'].sum()
-valor_total = df_m['Valor Total RC'].sum()
+# O consumo acumulado real por item na ata não pode ultrapassar o teto contratual previsto (100% de consumo, saldo zero).
+# Criamos a tabela geral primeiro para obtermos as métricas consolidadas e limitadas por item de acordo com as regras de negócio contratuais.
+df_geral = df_m.groupby(
+    ['Material RC', 'Descrição Material RC', 'Unidade de Medida'], as_index=False
+).agg({
+    'Métrica Prevista': 'sum',
+    'Métrica RC': 'sum',
+    'Valor Total RC': 'sum',
+    'Vlr Unitário': 'first'
+})
+
+# Salvar o consumo real sem limites para identificar itens críticos/esgotados reais
+df_geral['Métrica RC Real'] = df_geral['Métrica RC']
+
+# Aplicar o cap de 100% no consumo e saldo mínimo zero para a visão contratual consolidada
+df_geral['Métrica RC'] = np.minimum(df_geral['Métrica RC'], df_geral['Métrica Prevista'])
+df_geral['Saldo'] = np.maximum(0.0, df_geral['Métrica Prevista'] - df_geral['Métrica RC'])
+df_geral['% Consumo'] = np.where(df_geral['Métrica Prevista'] > 0, df_geral['Métrica RC'] / df_geral['Métrica Prevista'] * 100, 0)
+
+# Ordenação
+df_geral['Material_Num'] = pd.to_numeric(df_geral['Material RC'], errors='coerce').fillna(0)
+df_geral = df_geral.sort_values('Material_Num', ascending=True).drop(columns=['Material_Num'])
+
+# ==========================================================
+# 5.1 KPIs E RESUMO EXECUTIVO
+# ==========================================================
+total_prev = df_geral['Métrica Prevista'].sum()
+total_real = df_geral['Métrica RC'].sum() # Soma das métricas limitadas ao teto contratual da Ata
+valor_total = df_geral['Valor Total RC'].sum()
 perc_global = (total_real / total_prev * 100) if total_prev > 0 else 0
 
-itens_agg = df_m.groupby('Material RC').agg({'Métrica Prevista': 'sum', 'Métrica RC': 'sum'})
-itens_agg['p'] = np.where(itens_agg['Métrica Prevista'] > 0, itens_agg['Métrica RC'] / itens_agg['Métrica Prevista'], 0)
-n_itens = itens_agg.shape[0]
-criticos = int((itens_agg['p'] >= 0.9).sum())
-esgotados = int((itens_agg['p'] >= 1.0).sum())
+n_itens = df_geral.shape[0]
+# Criticos e esgotados usam a métrica real não limitada para identificar pressão real física sobre as cotas
+criticos = int(((df_geral['Métrica RC Real'] / df_geral['Métrica Prevista']) >= 0.9).sum())
+esgotados = int(((df_geral['Métrica RC Real'] / df_geral['Métrica Prevista']) >= 1.0).sum())
 
 st.subheader("Resumo Executivo")
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -434,23 +462,11 @@ k5.markdown(criar_card("Itens Esgotados (100%)", f"{esgotados}", "#d62828" if es
 st.divider()
 
 # ==========================================================
-# 5.5 TABELA GERAL POR ITEM (RESUMO EXECUTIVO)
+# 5.5 TABELA GERAL POR ITEM (APRESENTAÇÃO)
 # ==========================================================
 st.subheader("📋 Resumo Geral por Item")
-st.caption("Visão consolidada do consumo total da ata, independente da secretaria.")
+st.caption("Visão consolidada do consumo total da ata, independente da secretaria (limitada ao teto contratual de 100%).")
 
-df_geral = df_m.groupby(
-    ['Material RC', 'Descrição Material RC', 'Unidade de Medida'], as_index=False
-).agg({
-    'Métrica Prevista': 'sum',
-    'Métrica RC': 'sum',
-    'Valor Total RC': 'sum',
-    'Vlr Unitário': 'first'
-})
-df_geral['Saldo'] = df_geral['Métrica Prevista'] - df_geral['Métrica RC']
-df_geral['% Consumo'] = np.where(df_geral['Métrica Prevista'] > 0, df_geral['Métrica RC'] / df_geral['Métrica Prevista'] * 100, 0)
-df_geral['Material_Num'] = pd.to_numeric(df_geral['Material RC'], errors='coerce').fillna(0)
-df_geral = df_geral.sort_values('Material_Num', ascending=True).drop(columns=['Material_Num'])
 
 linhas_geral_html = ""
 for _, r in df_geral.iterrows():
@@ -462,7 +478,7 @@ for _, r in df_geral.iterrows():
     
     linha_estilo = "background-color: #ffe6e6; font-weight: bold; color: #990000;" if nao_previsto else ""
     
-    vlr_unit_str = "-" if r['Unidade de Medida'] == 'SV' else formatar_brl(r['Vlr Unitário'])
+    vlr_unit_str = "-" if r['Unidade de Medida'] == 'SV' or r['Vlr Unitário'] == 0 else formatar_brl(r['Vlr Unitário'])
     
     linhas_geral_html += f"""
     <tr style="{linha_estilo}">
@@ -506,10 +522,16 @@ st.divider()
 st.subheader("📋 Detalhamento por Item e Secretaria")
 st.caption("Nota: Para itens de serviço (SV), as colunas de Previsto, Realizado e Saldo exibem o Valor Financeiro ao invés de quantidades.")
 
-# Filtro por secretaria
-secretarias = sorted(df_m['Nome Secretaria'].unique().tolist())
-sec_filtro = st.multiselect("Filtrar por Secretaria:", secretarias, default=secretarias)
-df_tab = df_m[df_m['Nome Secretaria'].isin(sec_filtro)].copy()
+# Filtros por Item e Secretaria
+col_f1, col_f2 = st.columns(2)
+with col_f1:
+    itens_cod = sorted(df_m['Material RC'].unique().tolist())
+    item_filtro = st.multiselect("Filtrar por Código do Item:", itens_cod, default=itens_cod)
+with col_f2:
+    secretarias = sorted(df_m['Nome Secretaria'].unique().tolist())
+    sec_filtro = st.multiselect("Filtrar por Secretaria:", secretarias, default=secretarias)
+
+df_tab = df_m[df_m['Material RC'].isin(item_filtro) & df_m['Nome Secretaria'].isin(sec_filtro)].copy()
 
 df_tab['Material_Num'] = pd.to_numeric(df_tab['Material RC'], errors='coerce').fillna(0)
 df_tab = df_tab.sort_values(['Material_Num', 'Nome Secretaria'], ascending=[True, True]).drop(columns=['Material_Num'])
@@ -525,7 +547,7 @@ for _, r in df_tab.iterrows():
     
     linha_estilo = "background-color: #ffe6e6; font-weight: bold; color: #990000;" if nao_previsto else ""
     
-    vlr_unit_str = "-" if r['Unidade de Medida'] == 'SV' else formatar_brl(r['Vlr Unitário'])
+    vlr_unit_str = "-" if r['Unidade de Medida'] == 'SV' or r['Vlr Unitário'] == 0 else formatar_brl(r['Vlr Unitário'])
     
     linhas_html += f"""
     <tr style="{linha_estilo}">

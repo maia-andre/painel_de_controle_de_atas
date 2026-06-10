@@ -15,6 +15,15 @@ Isso permite identificar imediatamente desvios de planejamento, itens próximos 
 
 ---
 
+## ⚙️ Principais Regras de Negócio e Funcionalidades
+
+*   **Controle Contratual (Capping):** O consumo acumulado na visão global é matematicamente limitado a 100% do teto previsto para cálculo de saldo, enquanto os KPIs destacam a pressão física real dos itens (críticos ≥90% e esgotados ≥100%).
+*   **Valoração Unitária (Preço Praticado):** O painel adota exclusivamente o valor unitário praticado na execução financeira (RC). Itens planejados que ainda não possuam RC emitida exibem o valor unitário como um traço (`-`).
+*   **Métrica de Serviços (SV):** Para itens categorizados como "SV" (Serviço), a base de cálculo (Previsto vs. Realizado) transita automaticamente de "Quantidades" para "Valor Financeiro" (Reais).
+*   **Filtros Analíticos Combinados:** As tabelas de detalhamento suportam filtragem dinâmica e simultânea por **Código de Material** e por **Secretaria (Órgão)**.
+
+---
+
 ## 🛠️ Stack Tecnológica
 
 O projeto foi construído utilizando tecnologias modernas e eficientes no ecossistema Python:

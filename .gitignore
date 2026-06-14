@@ -16,6 +16,9 @@
 /_internal/
 *.spec
 
+# --- SEGREDOS E CONFIG DE AMBIENTE ---
+/.env
+
 # --- CACHE E AMBIENTES VIRTUAIS ---
 __pycache__/
 *.py[cod]

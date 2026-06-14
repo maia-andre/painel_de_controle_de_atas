@@ -4,6 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 
+from db import get_df
+
 # 1. Configuração inicial da página
 st.set_page_config(
     page_title="Painel de Controle de Atas",
@@ -103,147 +105,55 @@ def formatar_brl(valor):
 
 
 # ==========================================================
-# 2. CARREGAMENTO DE DADOS
+# 2. CARREGAMENTO DE DADOS (PostgreSQL)
 # ==========================================================
 @st.cache_data
 def carregar_dados():
-    # --- Base de Atas (metadados: vigência, prorrogada) ---
-    try:
-        df_atas = pd.read_excel('base_sds.xlsx', dtype=str)
-    except Exception:
-        df_atas = pd.DataFrame()
+    # --- Metadados das atas ---
+    meta = get_df('''
+        SELECT numero_ata AS "Nº Ata", ano AS "Ano Ata", objeto AS "Objeto",
+               vigencia_inicio AS "Assinatura", vigencia_fim AS "Vigência",
+               CASE WHEN prorrogada THEN 'S' ELSE 'N' END AS "Prorrogada"
+        FROM atas
+    ''')
+    for c in ['Nº Ata', 'Ano Ata']:
+        meta[c] = meta[c].fillna('').astype(str).str.strip()
 
-    if not df_atas.empty:
-        df_atas.columns = df_atas.columns.str.strip()
-        ren = {}
-        for c in df_atas.columns:
-            if 'Ata' in c and 'N' in c and 'Prorr' not in c and 'Ano' not in c:
-                ren[c] = 'Nº Ata'
-            elif 'Ano' in c and 'Ata' in c:
-                ren[c] = 'Ano Ata'
-            elif 'Assinatura' in c:
-                ren[c] = 'Assinatura'
-            elif 'Vig' in c:
-                ren[c] = 'Vigência'
-            elif 'Prorr' in c:
-                ren[c] = 'Prorrogada'
-            elif 'Objeto' in c:
-                ren[c] = 'Objeto'
-        df_atas.rename(columns=ren, inplace=True)
-        df_atas['Nº Ata'] = df_atas['Nº Ata'].fillna('').str.strip().str.replace(r'^0+', '', regex=True)
-        df_atas['Ano Ata'] = df_atas['Ano Ata'].fillna('').str.strip()
-        meta = df_atas.groupby(['Nº Ata', 'Ano Ata']).first().reset_index()
-        meta = meta[['Nº Ata', 'Ano Ata'] + [c for c in ['Objeto', 'Assinatura', 'Vigência', 'Prorrogada'] if c in meta.columns]]
-    else:
-        meta = pd.DataFrame(columns=['Nº Ata', 'Ano Ata', 'Objeto', 'Assinatura', 'Vigência', 'Prorrogada'])
+    # --- Consumo (RCAF) — já sem cancelados (view consumo_valido) ---
+    df_real = get_df('''
+        SELECT c.numero_ata AS "Nº Ata", c.ano AS "Ano Ata",
+               c.codigo_material AS "Material RC",
+               c.descricao AS "Descrição Material RC",
+               c.quantidade AS "Qtde RC", c.valor_unitario AS "Valor Unit. RC",
+               c.valor_total AS "Valor Total RC", c.data_rc AS "Data RC",
+               c.orgao AS "Secr. RC",
+               COALESCE(s.codigo || ' - ' || s.sigla, c.orgao) AS "Nome Secretaria"
+        FROM consumo_valido c
+        LEFT JOIN secretarias s ON s.codigo = c.secretaria_codigo
+    ''')
+    for c in ['Nº Ata', 'Ano Ata', 'Material RC', 'Nome Secretaria']:
+        df_real[c] = df_real[c].fillna('').astype(str).str.strip()
+    for c in ['Qtde RC', 'Valor Unit. RC', 'Valor Total RC']:
+        df_real[c] = pd.to_numeric(df_real[c], errors='coerce').fillna(0)
+    df_real['Data RC'] = pd.to_datetime(df_real['Data RC'], errors='coerce')
 
-    # --- Base de Consumo (RCAF) ---
-    try:
-        df_real = pd.read_csv('base_rcaf.csv', sep=';', dtype=str, low_memory=False)
-    except UnicodeDecodeError:
-        df_real = pd.read_csv('base_rcaf.csv', sep=';', dtype=str, encoding='latin-1', low_memory=False)
-
-    df_real.columns = df_real.columns.str.strip()
-    rr = {}
-    for col in df_real.columns:
-        if 'N' in col and 'Ata' in col:
-            rr[col] = 'Nº Ata'
-        elif 'Ano' in col and 'Ata' in col:
-            rr[col] = 'Ano Ata'
-        elif 'Qtd' in col and 'RC' in col:
-            rr[col] = 'Qtde RC'
-        elif 'Val.Unit' in col and 'RC' in col:
-            rr[col] = 'Valor Unit. RC'
-        elif 'Val.Total' in col and 'RC' in col:
-            rr[col] = 'Valor Total RC'
-        elif 'Secr' in col and 'RC' in col:
-            rr[col] = 'Secr. RC'
-        elif 'Material' in col and 'RC' in col and 'Descri' not in col:
-            rr[col] = 'Material RC'
-        elif 'Descri' in col and 'Material' in col and 'RC' in col:
-            rr[col] = 'Descrição Material RC'
-        elif 'Data' in col and 'RC' in col:
-            rr[col] = 'Data RC'
-    df_real.rename(columns=rr, inplace=True)
-
-    df_real['Nº Ata'] = df_real['Nº Ata'].fillna('').str.strip().str.replace(r'^0+', '', regex=True)
-    df_real['Ano Ata'] = df_real['Ano Ata'].fillna('').str.strip()
-    
-    df_real['Qtde RC'] = pd.to_numeric(
-        df_real.get('Qtde RC', pd.Series(dtype=str)).fillna('0').str.replace(',', '.', regex=False), errors='coerce'
-    ).fillna(0)
-    df_real['Valor Unit. RC'] = pd.to_numeric(
-        df_real.get('Valor Unit. RC', pd.Series(dtype=str)).fillna('0').str.replace('.', '', regex=False).str.replace(',', '.', regex=False),
-        errors='coerce'
-    ).fillna(0)
-    df_real['Valor Total RC'] = pd.to_numeric(
-        df_real.get('Valor Total RC', pd.Series(dtype=str)).fillna('0').str.replace('.', '', regex=False).str.replace(',', '.', regex=False),
-        errors='coerce'
-    ).fillna(0)
-
-    if 'Data RC' in df_real.columns:
-        df_real['Data RC'] = pd.to_datetime(df_real['Data RC'], dayfirst=True, errors='coerce')
-
-    # Descartar registros onde a AF (Autorização de Fornecimento) foi CANCELADA
-    if 'Status AF' in df_real.columns:
-        df_real = df_real[df_real['Status AF'] != 'CANCELADA']
-
-    # --- Base de Previstos ---
-    try:
-        df_prev = pd.read_csv('previstos_dashboard.csv', sep=';', dtype=str, low_memory=False)
-    except UnicodeDecodeError:
-        df_prev = pd.read_csv('previstos_dashboard.csv', sep=';', dtype=str, encoding='latin-1', low_memory=False)
-
-    df_prev.columns = df_prev.columns.str.strip()
-    rp = {}
-    for col in df_prev.columns:
-        if 'N' in col and 'Ata' in col:
-            rp[col] = 'Nº Ata'
-        elif 'Ano' in col and 'Ata' in col:
-            rp[col] = 'Ano Ata'
-        elif 'Qtde' in col and 'Prev' in col:
-            rp[col] = 'Qtde Prevista'
-        elif 'Valor Unit' in col and 'Prev' in col:
-            rp[col] = 'Valor Unitário Previsto'
-        elif 'Valor Total' in col and 'Prev' in col:
-            rp[col] = 'Valor Total Previsto'
-        elif 'Secr' in col and 'RC' in col:
-            rp[col] = 'Secr. RC'
-        elif 'Material' in col and 'RC' in col and 'Descri' not in col:
-            rp[col] = 'Material RC'
-        elif 'Descri' in col and 'Material' in col and 'RC' in col:
-            rp[col] = 'Descrição Material RC'
-        elif 'Unidade' in col and 'Medida' in col:
-            rp[col] = 'Unidade de Medida'
-    df_prev.rename(columns=rp, inplace=True)
-
-    df_prev['Nº Ata'] = df_prev['Nº Ata'].fillna('').str.strip().str.replace(r'^0+', '', regex=True)
-    df_prev['Ano Ata'] = df_prev['Ano Ata'].fillna('').str.strip()
-    df_prev['Qtde Prevista'] = pd.to_numeric(
-        df_prev.get('Qtde Prevista', pd.Series(dtype=str)).fillna('0').str.replace('.', '', regex=False).str.replace(',', '.', regex=False),
-        errors='coerce'
-    ).fillna(0)
-    df_prev['Valor Total Previsto'] = pd.to_numeric(
-        df_prev.get('Valor Total Previsto', pd.Series(dtype=str)).fillna('0').str.replace('.', '', regex=False).str.replace(',', '.', regex=False),
-        errors='coerce'
-    ).fillna(0)
-    df_prev['Valor Unitário Previsto'] = pd.to_numeric(
-        df_prev.get('Valor Unitário Previsto', pd.Series(dtype=str)).fillna('0').str.replace('.', '', regex=False).str.replace(',', '.', regex=False),
-        errors='coerce'
-    ).fillna(0)
-
-    # Dicionário de secretarias
-    dic_sec = {
-        5: "5 - GP", 10: "10 - SG", 15: "15 - SAJ", 20: "20 - SGAF",
-        30: "30 - SEURBS", 35: "35 - SGO", 40: "40 - SEC", 45: "45 - SEQV", 50: "50 - SASC",
-        55: "55 - SMC", 60: "60 - SS", 65: "65 - SEMOB", 70: "70 - SEPAC",
-        75: "75 - SIDE", 80: "80 - EG", 90: "90 - SHRF"
-    }
-    
-    for df in [df_real, df_prev]:
-        if 'Secr. RC' in df.columns:
-            nums = df['Secr. RC'].str.extract(r'(\d+)')[0].astype(float)
-            df['Nome Secretaria'] = nums.map(dic_sec).fillna(df['Secr. RC'])
+    # --- Previstos (teto planejado) ---
+    df_prev = get_df('''
+        SELECT p.numero_ata AS "Nº Ata", p.ano AS "Ano Ata",
+               p.codigo_material AS "Material RC",
+               p.descricao AS "Descrição Material RC",
+               p.qtd_prevista AS "Qtde Prevista",
+               p.valor_total_previsto AS "Valor Total Previsto",
+               p.unidade AS "Unidade de Medida", p.orgao AS "Secr. RC",
+               COALESCE(s.codigo || ' - ' || s.sigla, p.orgao) AS "Nome Secretaria"
+        FROM previstos p
+        LEFT JOIN secretarias s ON s.codigo = p.secretaria_codigo
+    ''')
+    for c in ['Nº Ata', 'Ano Ata', 'Material RC', 'Nome Secretaria']:
+        df_prev[c] = df_prev[c].fillna('').astype(str).str.strip()
+    df_prev['Unidade de Medida'] = df_prev['Unidade de Medida'].fillna('-')
+    for c in ['Qtde Prevista', 'Valor Total Previsto']:
+        df_prev[c] = pd.to_numeric(df_prev[c], errors='coerce').fillna(0)
 
     return df_real, df_prev, meta
 
@@ -257,8 +167,11 @@ st.divider()
 
 try:
     df_real, df_prev, df_meta = carregar_dados()
-except FileNotFoundError:
-    st.error("⚠️ Certifique-se de que os arquivos 'base_rcaf.csv' e 'previstos_dashboard.csv' estão no diretório.")
+except Exception as e:
+    st.error(
+        "⚠️ Erro ao carregar dados do banco. Verifique a conexão "
+        f"(DATABASE_URL no .env). Detalhe: {e}"
+    )
     st.stop()
 
 # --- Montar lista de atas disponíveis ---
@@ -350,16 +263,9 @@ if ata_prev.empty and ata_real.empty:
 # ==========================================================
 # 4. ENGINE DE CRUZAMENTO (MERGE)
 # ==========================================================
-# Garantir existência das colunas de valor unitário
-v_unit_prev_col = 'Valor Unitário Previsto' if 'Valor Unitário Previsto' in ata_prev.columns else 'Valor Unitário Previsto'
-v_unit_real_col = 'Valor Unit. RC' if 'Valor Unit. RC' in ata_real.columns else 'Valor Unit. RC'
-
-# Assegurar tipo numérico nas colunas locais de valor unitário
-if v_unit_prev_col in ata_prev.columns:
-    ata_prev[v_unit_prev_col] = pd.to_numeric(ata_prev[v_unit_prev_col], errors='coerce').fillna(0)
-else:
-    ata_prev[v_unit_prev_col] = 0.0
-
+# Valor unitário vem EXCLUSIVAMENTE do preço praticado na execução (Val.Unit RC).
+# O valor unitário da SD/previsto nunca é usado (dado errado, do início da licitação).
+v_unit_real_col = 'Valor Unit. RC'
 if v_unit_real_col in ata_real.columns:
     ata_real[v_unit_real_col] = pd.to_numeric(ata_real[v_unit_real_col], errors='coerce').fillna(0)
 else:
@@ -371,7 +277,6 @@ grp_prev = ata_prev.groupby(
     'Descrição Material RC': 'first',
     'Qtde Prevista': 'sum',
     'Valor Total Previsto': 'sum',
-    v_unit_prev_col: 'first'
 })
 
 grp_real = ata_real.groupby(
@@ -388,11 +293,8 @@ df_m['Descrição Material RC'] = df_m['Descrição Material RC_y'].fillna(df_m[
 df_m['Unidade de Medida'] = df_m['Unidade de Medida'].fillna('-')
 df_m.drop(columns=['Descrição Material RC_x', 'Descrição Material RC_y'], inplace=True, errors='ignore')
 
-# Mapeamentos globais por código para resolver lacunas
-global_prev_prices = grp_prev.groupby('Material RC')[v_unit_prev_col].first().to_dict()
+# Preço unitário definitivo: somente o praticado na base de consumo (Val.Unit RC)
 global_real_prices = grp_real.groupby('Material RC')[v_unit_real_col].first().to_dict()
-
-# Determinar valor unitário definitivo APENAS pelo preço praticado na base de consumo (Val.Unit RC)
 df_m['Vlr Unitário'] = df_m[v_unit_real_col].replace(0, np.nan)
 df_m['Vlr Unitário'] = df_m['Vlr Unitário'].fillna(df_m['Material RC'].map(global_real_prices))
 df_m['Vlr Unitário'] = df_m['Vlr Unitário'].fillna(0)
@@ -426,10 +328,8 @@ df_geral = df_m.groupby(
     'Vlr Unitário': 'first'
 })
 
-# Salvar o consumo real sem limites para identificar itens críticos/esgotados reais
-df_geral['Métrica RC Real'] = df_geral['Métrica RC']
-
-# Aplicar o cap de 100% no consumo e saldo mínimo zero para a visão contratual consolidada
+# Aplicar o cap de 100% no consumo e saldo mínimo zero para a visão contratual consolidada.
+# A mesma métrica limitada alimenta a tabela E os KPIs: no consolidado nada passa de 100%.
 df_geral['Métrica RC'] = np.minimum(df_geral['Métrica RC'], df_geral['Métrica Prevista'])
 df_geral['Saldo'] = np.maximum(0.0, df_geral['Métrica Prevista'] - df_geral['Métrica RC'])
 df_geral['% Consumo'] = np.where(df_geral['Métrica Prevista'] > 0, df_geral['Métrica RC'] / df_geral['Métrica Prevista'] * 100, 0)
@@ -447,9 +347,10 @@ valor_total = df_geral['Valor Total RC'].sum()
 perc_global = (total_real / total_prev * 100) if total_prev > 0 else 0
 
 n_itens = df_geral.shape[0]
-# Criticos e esgotados usam a métrica real não limitada para identificar pressão real física sobre as cotas
-criticos = int(((df_geral['Métrica RC Real'] / df_geral['Métrica Prevista']) >= 0.9).sum())
-esgotados = int(((df_geral['Métrica RC Real'] / df_geral['Métrica Prevista']) >= 1.0).sum())
+# Críticos e esgotados usam a métrica já limitada ao teto (consolidado nunca passa de 100%).
+# Itens "não previstos" (sem teto) têm % Consumo = 0 e, portanto, não inflam o contador de esgotados.
+criticos = int((df_geral['% Consumo'] >= 90).sum())
+esgotados = int((df_geral['% Consumo'] >= 100).sum())
 
 st.subheader("Resumo Executivo")
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -472,14 +373,14 @@ linhas_geral_html = ""
 for _, r in df_geral.iterrows():
     nao_previsto = (r['Métrica Prevista'] == 0) and (r['Métrica RC'] > 0)
     bp = barra_progresso(r['% Consumo'], previsto=not nao_previsto)
-    
+
     saldo_cor = "color:#d62828;font-weight:bold;" if r['Saldo'] < 0 else ""
     fmt_m = "{:,.2f}" if r['Unidade de Medida'] == 'SV' else "{:,.0f}"
-    
+
     linha_estilo = "background-color: #ffe6e6; font-weight: bold; color: #990000;" if nao_previsto else ""
-    
+
     vlr_unit_str = "-" if r['Unidade de Medida'] == 'SV' or r['Vlr Unitário'] == 0 else formatar_brl(r['Vlr Unitário'])
-    
+
     linhas_geral_html += f"""
     <tr style="{linha_estilo}">
         <td>{r['Material RC']}</td>
@@ -541,14 +442,14 @@ linhas_html = ""
 for _, r in df_tab.iterrows():
     nao_previsto = (r['Métrica Prevista'] == 0) and (r['Métrica RC'] > 0)
     bp = barra_progresso(r['% Consumo'], previsto=not nao_previsto)
-    
+
     saldo_cor = "color:#d62828;font-weight:bold;" if r['Saldo'] < 0 else ""
     fmt_m = "{:,.2f}" if r['Unidade de Medida'] == 'SV' else "{:,.0f}"
-    
+
     linha_estilo = "background-color: #ffe6e6; font-weight: bold; color: #990000;" if nao_previsto else ""
-    
+
     vlr_unit_str = "-" if r['Unidade de Medida'] == 'SV' or r['Vlr Unitário'] == 0 else formatar_brl(r['Vlr Unitário'])
-    
+
     linhas_html += f"""
     <tr style="{linha_estilo}">
         <td>{r['Material RC']}</td>

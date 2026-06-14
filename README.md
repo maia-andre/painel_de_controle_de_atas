@@ -28,12 +28,12 @@ Isso permite identificar imediatamente desvios de planejamento, itens próximos 
 
 O projeto foi construído utilizando tecnologias modernas e eficientes no ecossistema Python:
 
-*   **Interface e Visualização:** [Streamlit](https://streamlit.io/) — framework ágil para criação de aplicações web interativas de dados.
-*   **Processamento e Análise de Dados:** [Pandas](https://pandas.pydata.org/) & [NumPy](https://numpy.org/) — manipulação eficiente de matrizes de dados e cruzamento (merge) relacional.
-*   **Gráficos Interativos:** [Plotly](https://plotly.com/) — gráficos dinâmicos de barra empilhados e sobrepostos para análise comparativa.
-*   **Automação e Scraping:** [Playwright](https://playwright.dev/python/) — robôs automatizados (`bot_etps.py` e `bot_sd.py`) para login seguro no portal eSJC/ADMC e raspagem de quantidades previstas.
-*   **Excel Engine:** [openpyxl](https://openpyxl.readthedocs.io/) — manipulação de metadados e templates estruturados.
-*   **Distribuição Local:** [PyInstaller](https://pyinstaller.org/) — empacotamento completo do dashboard em um único executável standalone (`run_painel.exe`) que elimina a necessidade de instalação do Python na máquina do usuário final.
+*   **Interface e Visualização:** [Streamlit](https://streamlit.io/) — app multipage (Dashboard + telas de Administração), com navegação por `st.navigation`.
+*   **Banco de Dados:** [PostgreSQL 17](https://www.postgresql.org/) acessado via [SQLAlchemy](https://www.sqlalchemy.org/) — fonte única de dados de atas, previstos e consumo (substitui os antigos CSV/XLSX).
+*   **Processamento e Análise de Dados:** [Pandas](https://pandas.pydata.org/) & [NumPy](https://numpy.org/) — cruzamento (merge) relacional e aplicação das regras de negócio.
+*   **Gráficos Interativos:** [Plotly](https://plotly.com/) — gráficos comparativos de Previsto vs. Realizado por secretaria.
+*   **Automação e Scraping:** [Playwright](https://playwright.dev/python/) — robôs (`bot_etps.py` e `bot_sd.py`) que lêem a fila de documentos do banco, fazem login no portal eSJC/ADMC e gravam os previstos.
+*   **Deploy:** [Docker](https://www.docker.com/) + Docker Compose — empacotamento reproduzível (Postgres + app) para rodar local ou em VM da intranet.
 
 ---
 
@@ -41,98 +41,111 @@ O projeto foi construído utilizando tecnologias modernas e eficientes no ecossi
 
 O diagrama abaixo detalha a movimentação dos dados, desde a captação automática pelos robôs, passando pelo armazenamento intermediário, até o cruzamento relacional e visualização final:
 
+A arquitetura é centrada no **banco PostgreSQL**: o gestor cadastra atas e enfileira documentos pelas telas de Administração, os bots consomem essa fila e gravam os previstos, e o Dashboard apenas lê o banco.
+
 ```mermaid
 flowchart TD
-    subgraph Entrada ["Fase 1: Entrada & Fila de Busca"]
-        A1[base_etps.csv] -->|Fila de ETPs| B1(bot_etps.py)
-        A2[base_sds.xlsx] -->|Fila de SDs por Ata| B2(bot_sd.py)
+    subgraph Admin ["Administração (telas Streamlit)"]
+        ADM[Atas & Documentos / Secretarias] -->|cadastro + fila| DB[(PostgreSQL)]
     end
 
-    subgraph Extracao ["Fase 2: Automação & Raspagem"]
-        B1 -->|Playwright Crawling| C[Portal eSJC / ADMC]
-        B2 -->|Playwright Crawling| C
-        C -->|Consolidação de Itens| D[previstos_dashboard.csv]
+    subgraph Carga ["Carga inicial (one-time)"]
+        CSV[CSV/XLSX legados] -->|scripts/load_csv_to_db.py| DB
     end
 
-    subgraph Consumo ["Fase 3: Execução Financeira"]
-        E[base_rcaf.csv] -->|Dados de RCs e AFs| F{app.py}
-        D -->|Metas Previstas / ETP| F
-        A2 -->|Metadados de Atas| F
+    subgraph Bots ["Automação & Raspagem"]
+        DB -->|fila ata_documentos pendente| B1(bot_etps.py)
+        DB -->|fila ata_documentos pendente| B2(bot_sd.py)
+        B1 -->|Playwright| C[Portal eSJC / ADMC]
+        B2 -->|Playwright| C
+        C -->|itens previstos + status| DB
     end
 
-    subgraph Visualizacao ["Fase 4: Painel Streamlit UI"]
-        F -->|Processamento & Merge| G1[KPIs Gerais]
-        F -->|Agrupamento Global| G2[Resumo Geral por Item]
-        F -->|Visão por Órgão| G3[Detalhamento por Secretaria]
-        F -->|Plotly Charts| G4[Gráfico Comparativo]
-        F -->|Matriz Flexível| G5[Pivot Table Expansível]
+    subgraph Visualizacao ["Painel (paginas/dashboard.py)"]
+        DB -->|read_sql| F{merge & regras}
+        F --> G1[KPIs Gerais]
+        F --> G2[Resumo Geral por Item]
+        F --> G3[Detalhamento por Secretaria]
+        F --> G4[Gráfico Comparativo]
+        F --> G5[Pivot Table]
     end
 
-    classDef files fill:#002d72,stroke:#001a40,stroke-width:2px,color:#fff;
+    classDef db fill:#002d72,stroke:#001a40,stroke-width:2px,color:#fff;
     classDef bots fill:#f2a900,stroke:#d48800,stroke-width:2px,color:#000;
     classDef portal fill:#d62828,stroke:#990000,stroke-width:2px,color:#fff;
     classDef streamlit fill:#2a9d8f,stroke:#1f786d,stroke-width:2px,color:#fff;
 
-    class A1,A2,D,E files;
+    class DB db;
     class B1,B2 bots;
     class C portal;
-    class F,G1,G2,G3,G4,G5 streamlit;
+    class ADM,F,G1,G2,G3,G4,G5 streamlit;
 ```
 
 ---
 
-## 📁 Estrutura de Templates (Uso Seguro de Planilhas)
+## 📁 Carga inicial dos dados legados
 
-Para evitar o versionamento indesejado de dados de consumo real ou informações sensíveis, o repositório possui uma pasta `/templates` contendo as estruturas vazias (com cabeçalhos exatos) que o sistema espera receber:
+Os dados de produção (`base_rcaf.csv`, `base_sds.xlsx`, `previstos_dashboard.csv`) **não** ficam no repositório (estão no `.gitignore`). A pasta `/templates` mantém as estruturas vazias, com os cabeçalhos exatos esperados, para referência do formato.
 
-1.  **`templates/base_sds_template.xlsx`**: Metadados de vigência das Atas e a listagem de colunas para vincular as SDs de cada uma das Atas (suporta até 16 SDs por linha).
-2.  **`templates/base_rcaf_template.csv`**: Histórico detalhado de consumo (RCs e AFs) com delimitador ponto e vírgula (`;`).
-3.  **`templates/base_etps_template.csv`**: Fila de entrada contendo números e anos dos ETPs que o robô Playwright deve buscar.
-4.  **`templates/previstos_dashboard_template.csv`**: Tabela de itens planejados resultante das automações, consumida diretamente pelo Streamlit.
+A migração dos dados legados para o banco é feita **uma vez** pelo script de carga, que roda no host contra o Postgres do compose:
+
+```bash
+# 1) Diagnostica os arquivos (status reais, itens SV, linhas sem ata) — não toca no banco
+python scripts/load_csv_to_db.py --profile
+
+# 2) Carrega tudo e valida (arquivo vs banco)
+python scripts/load_csv_to_db.py
+```
 
 > [!IMPORTANT]
-> **Como Alimentar:** Faça uma cópia do template correspondente da pasta `/templates/`, renomeie para o nome original (removendo `_template`) e coloque-o diretamente na raiz do projeto antes de rodar o painel ou os robôs. Os arquivos na raiz estão blindados pelo `.gitignore`.
+> Coloque os arquivos legados na **raiz** do projeto (copiando de `/templates/` e removendo o sufixo `_template`, ou usando os arquivos reais) antes de rodar a carga. Eles permanecem blindados pelo `.gitignore`.
 
 ---
 
-## 🚀 Como Executar o Painel
+## 🚀 Como Executar (Docker)
 
-### Método 1: Via Executivo Standalone (Recomendado para Usuários Finais)
-Basta dar dois cliques no arquivo executável local:
+Pré-requisitos: Docker + Docker Compose. Postgres 17 sobe como serviço do compose.
+
 ```bash
-run_painel.exe
-```
-Isso abrirá um console local e, em instantes, seu navegador padrão abrirá a aplicação em `http://localhost:8501`.
+# 1) Configure o ambiente
+cp .env.example .env        # edite POSTGRES_PASSWORD, PORTAL_CPF/SENHA etc.
 
-### Método 2: Via Ambiente de Desenvolvimento Python
-1. Certifique-se de ter o Python 3.9+ instalado.
-2. Instale as dependências:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Execute o servidor Streamlit:
-   ```bash
-   streamlit run app.py
-   ```
+# 2) Suba o banco (o schema em db/schema.sql é aplicado automaticamente na 1ª vez)
+docker compose up -d db
+
+# 3) (Opcional) Carregue os dados legados a partir do host
+python scripts/load_csv_to_db.py
+
+# 4) Suba o painel
+docker compose up -d --build app
+```
+
+O painel fica disponível em `http://localhost:8501`. A sidebar dá acesso ao **Dashboard** e às telas de **Atas e Documentos** e **Secretarias**.
+
+> Para rodar sem Docker (ambiente Python local), aponte `DATABASE_URL` para um Postgres acessível, aplique `db/schema.sql`, instale `pip install -r requirements.txt` e rode `streamlit run app.py`.
+
+### Backup do banco
+
+```bash
+./scripts/backup.sh                 # gera backup_atas_AAAAMMDD_HHMMSS.sql
+# Restaurar:
+cat backup.sql | docker compose exec -T db psql -U painel atas
+```
 
 ---
 
 ## 🤖 Funcionamento das Automações (Robôs Playwright)
 
-Se você precisa atualizar a base de previsões (`previstos_dashboard.csv`) buscando novos dados direto do Portal:
+Os bots não têm mais arquivo de fila próprio: eles lêem a tabela `ata_documentos` (a fila alimentada na tela **Atas e Documentos**) e gravam os previstos no banco, marcando cada documento como `processado` ou `erro`.
 
-1.  **Bot de ETPs (`bot_etps.py`)**:
-    Alimente a planilha `base_etps.csv` na raiz com os números de ETPs que deseja raspar. Execute o robô:
+1.  **Cadastre** a ata e **enfileire** os documentos (SD/ETP) pela tela de Administração — eles entram como `pendente`.
+2.  **Execute** o bot correspondente (lê todos os pendentes daquele tipo):
     ```bash
-    python bot_etps.py
-    ```
-2.  **Bot de SDs (`bot_sd.py`)**:
-    Alimente a planilha `base_sds.xlsx` na raiz com os dados das atas e seus respectivos números de SDs vinculadas. Execute o robô:
-    ```bash
-    python bot_sd.py
+    docker compose run --rm app python bot_sd.py
+    docker compose run --rm app python bot_etps.py
     ```
 
-*Ambos os robôs solicitarão o Usuário (CPF) e a Senha institucional de acesso de forma segura através do terminal. O navegador Chromium abrirá automaticamente e executará as buscas, preenchendo o arquivo consolidado de planejamentos e registrando checkpoints para evitar buscas duplicadas em caso de quedas ou interrupções.*
+As credenciais vêm das variáveis `PORTAL_CPF` / `PORTAL_SENHA` (no `.env`); se ausentes, o bot pergunta no terminal. O Chromium roda em modo headless por padrão (`BOT_HEADLESS=true`); defina `BOT_HEADLESS=false` para depurar vendo a tela. Reprocessar um documento é só usar **Reenfileirar** na tela (volta a `pendente`).
 
 ---
 

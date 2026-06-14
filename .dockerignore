@@ -1,0 +1,16 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+# Dados de produção e artefatos locais nunca entram na imagem
+*.csv
+*.xlsx
+*.exe
+log_*.txt
+build/
+dist/
+*.spec
+images/

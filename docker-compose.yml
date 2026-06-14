@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-painel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trocar}
+      POSTGRES_DB: ${POSTGRES_DB:-atas}
+    ports:
+      # Exposto para rodar a carga (scripts/load_csv_to_db.py) a partir do host.
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Schema aplicado automaticamente na PRIMEIRA inicialização (volume vazio).
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-painel} -d ${POSTGRES_DB:-atas}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    environment:
+      # Dentro da rede do compose o banco é alcançado pelo nome do serviço (db).
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-painel}:${POSTGRES_PASSWORD:-trocar}@db:5432/${POSTGRES_DB:-atas}
+      PORTAL_CPF: ${PORTAL_CPF:-}
+      PORTAL_SENHA: ${PORTAL_SENHA:-}
+      BOT_HEADLESS: ${BOT_HEADLESS:-true}
+    ports:
+      - "8501:8501"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

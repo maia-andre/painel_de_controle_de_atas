@@ -18,16 +18,15 @@ NÃO altera regras de negócio. Apenas move o dado para o banco, já normalizado
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 # Permite rodar como script solto (python scripts/load_csv_to_db.py)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.banco import engine  # noqa: E402
 from core.normalizacao import (  # noqa: E402
     extrai_codigo_secretaria,
     is_cancelado,
@@ -55,11 +54,10 @@ def _ler_csv(caminho: Path) -> pd.DataFrame:
 
 
 def _eng():
-    load_dotenv(RAIZ / ".env")
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        sys.exit("ERRO: defina DATABASE_URL no .env (veja .env.example).")
-    return create_engine(url)
+    try:
+        return engine()
+    except RuntimeError as e:
+        sys.exit(f"ERRO: {e}")
 
 
 # ----------------------------------------------------------------------------
@@ -255,11 +253,12 @@ def _garante_colunas(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df
 
 
-def _truncar_e_inserir(engine, tabela: str, df: pd.DataFrame) -> None:
-    with engine.begin() as cx:
+def _truncar_e_inserir(eng, tabela: str, df: pd.DataFrame) -> None:
+    with eng.begin() as cx:
         cx.execute(text(f"TRUNCATE {tabela} RESTART IDENTITY CASCADE"))
-    df.where(pd.notnull(df), None).to_sql(
-        tabela, engine, if_exists="append", index=False, chunksize=5000, method="multi"
+    df = df.astype(object).where(pd.notnull(df), None)
+    df.to_sql(
+        tabela, eng, if_exists="append", index=False, chunksize=5000, method="multi"
     )
 
 

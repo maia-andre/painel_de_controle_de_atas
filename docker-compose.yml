@@ -6,8 +6,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trocar}
       POSTGRES_DB: ${POSTGRES_DB:-atas}
     ports:
-      # Exposto para rodar a carga (scripts/load_csv_to_db.py) a partir do host.
-      - "5432:5432"
+      # Porta do HOST (esquerda) exposta só para rodar a carga a partir da máquina.
+      # Configurável via POSTGRES_HOST_PORT por causa de outros projetos Docker.
+      # A porta interna (5432) e a comunicação app<->db NÃO mudam.
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Schema aplicado automaticamente na PRIMEIRA inicialização (volume vazio).
@@ -28,7 +30,7 @@ services:
       PORTAL_SENHA: ${PORTAL_SENHA:-}
       BOT_HEADLESS: ${BOT_HEADLESS:-true}
     ports:
-      - "8501:8501"
+      - "${APP_PORT:-8501}:8501"
     depends_on:
       db:
         condition: service_healthy

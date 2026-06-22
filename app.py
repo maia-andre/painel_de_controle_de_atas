@@ -188,6 +188,23 @@ def carregar_dados():
     if 'Status AF' in df_real.columns:
         df_real = df_real[df_real['Status AF'] != 'CANCELADA']
 
+    # --- Colapsar a expansão de AF (corrige sobrecontagem) ---
+    # O export do portal repete cada item de RC em 1 linha "RC-only" (sem AF)
+    # + 1 linha por AF emitida, todas carregando o mesmo Qtd RC/Val.Total RC.
+    # Somar essas linhas duplica o consumo de cada item que tem AF. Reduzimos
+    # ao grão verdadeiro: 1 linha por item de RC (Nº Ata, Ano Ata, RC, Material).
+    if 'RC' in df_real.columns and 'Material RC' in df_real.columns:
+        chaves_rc = ['Nº Ata', 'Ano Ata', 'RC', 'Material RC']
+        # Campos de nível-RC: pegar 1x via max (resolve a linha-RC com Qtd em branco)
+        campos_rc = {'Qtde RC', 'Valor Total RC', 'Valor Unit. RC', 'Data RC'}
+        # Só deduplica linhas que de fato têm RC + Material; SD-only/contratação
+        # direta (sem RC) passam intactas para não perder dado nem chave NaN.
+        dedupavel = df_real['RC'].notna() & df_real['Material RC'].notna()
+        agg_rc = {c: ('max' if c in campos_rc else 'first')
+                  for c in df_real.columns if c not in chaves_rc}
+        colapsado = df_real[dedupavel].groupby(chaves_rc, as_index=False, dropna=False).agg(agg_rc)
+        df_real = pd.concat([colapsado, df_real[~dedupavel]], ignore_index=True)
+
     # --- Base de Previstos ---
     try:
         df_prev = pd.read_csv('previstos_dashboard.csv', sep=';', dtype=str, low_memory=False)
@@ -232,12 +249,59 @@ def carregar_dados():
         errors='coerce'
     ).fillna(0)
 
+    # --- Base de Homologados (cadastro dos itens válidos por ata) ---
+    # Usada para (1) limpar previstos que fracassaram na licitação (não constam no
+    # cadastro homologado da ata) e (2) trazer Fornecedor/Marca ao Resumo Executivo.
+    try:
+        df_homo = pd.read_csv('base_homologados.csv', sep=';', dtype=str, low_memory=False)
+    except FileNotFoundError:
+        df_homo = pd.DataFrame()
+    except UnicodeDecodeError:
+        df_homo = pd.read_csv('base_homologados.csv', sep=';', dtype=str, encoding='latin-1', low_memory=False)
+
+    if not df_homo.empty:
+        df_homo.columns = df_homo.columns.str.strip()
+        rh = {}
+        for col in df_homo.columns:
+            if 'Ata' in col and 'Ano' not in col and 'Prorr' not in col:
+                rh[col] = 'Nº Ata'
+            elif 'Ano' in col and 'Ata' in col:
+                rh[col] = 'Ano Ata'
+            elif col == 'Material':
+                rh[col] = 'Material RC'   # mesmo nome de join usado em df_prev/df_real
+            elif 'Fornec' in col:
+                rh[col] = 'Fornecedor'
+        df_homo.rename(columns=rh, inplace=True)
+        df_homo['Nº Ata'] = df_homo['Nº Ata'].fillna('').str.strip().str.replace(r'^0+', '', regex=True)
+        df_homo['Ano Ata'] = df_homo['Ano Ata'].fillna('').str.strip()
+        df_homo['Material RC'] = df_homo.get('Material RC', pd.Series(dtype=str)).fillna('').str.strip()
+        if 'Fornecedor' in df_homo.columns:
+            # "274220-ATACADO VIRTUAL MAX LTDA" -> "ATACADO VIRTUAL MAX LTDA"
+            df_homo['Fornecedor'] = df_homo['Fornecedor'].fillna('').str.replace(r'^\s*\d+\s*-\s*', '', regex=True).str.strip()
+        else:
+            df_homo['Fornecedor'] = ''
+        if 'Marca' not in df_homo.columns:
+            df_homo['Marca'] = ''
+        df_homo['Marca'] = df_homo['Marca'].fillna('').str.strip()
+
+        # Filtro covered-only: dentro das atas presentes nos homologados, mantém só os
+        # previstos cujo (Ata, Material) foi homologado (descarta fracassados). Atas
+        # ausentes dos homologados ficam intactas (não apaga ata inteira sem querer).
+        homo_keys = set(zip(df_homo['Nº Ata'], df_homo['Ano Ata'], df_homo['Material RC']))
+        homo_atas = set(zip(df_homo['Nº Ata'], df_homo['Ano Ata']))
+        chave_ata = list(zip(df_prev['Nº Ata'], df_prev['Ano Ata']))
+        chave_item = list(zip(df_prev['Nº Ata'], df_prev['Ano Ata'], df_prev['Material RC']))
+        manter = [(a not in homo_atas) or (k in homo_keys) for a, k in zip(chave_ata, chave_item)]
+        df_prev = df_prev[pd.Series(manter, index=df_prev.index)].copy()
+    else:
+        df_homo = pd.DataFrame(columns=['Nº Ata', 'Ano Ata', 'Material RC', 'Fornecedor', 'Marca'])
+
     # Dicionário de secretarias
     dic_sec = {
         5: "5 - GP", 10: "10 - SG", 15: "15 - SAJ", 20: "20 - SGAF",
         30: "30 - SEURBS", 35: "35 - SGO", 40: "40 - SEC", 45: "45 - SEQV", 50: "50 - SASC",
-        55: "55 - SMC", 60: "60 - SS", 65: "65 - SEMOB", 70: "70 - SEPAC",
-        75: "75 - SIDE", 80: "80 - EG", 90: "90 - SHRF"
+        55: "55 - SMC", 60: "60 - SS", 65: "65 - SEMOB", 70: "70 - SIDE",
+        75: "75 - SEPAC", 80: "80 - EG", 90: "90 - SHRF"
     }
     
     for df in [df_real, df_prev]:
@@ -245,7 +309,7 @@ def carregar_dados():
             nums = df['Secr. RC'].str.extract(r'(\d+)')[0].astype(float)
             df['Nome Secretaria'] = nums.map(dic_sec).fillna(df['Secr. RC'])
 
-    return df_real, df_prev, meta
+    return df_real, df_prev, meta, df_homo
 
 
 # ==========================================================
@@ -256,7 +320,7 @@ st.markdown("Visão consolidada: **Planejamento (ETP)** vs. **Execução (RC)**.
 st.divider()
 
 try:
-    df_real, df_prev, df_meta = carregar_dados()
+    df_real, df_prev, df_meta, df_homo = carregar_dados()
 except FileNotFoundError:
     st.error("⚠️ Certifique-se de que os arquivos 'base_rcaf.csv' e 'previstos_dashboard.csv' estão no diretório.")
     st.stop()
@@ -283,9 +347,8 @@ for _, r in atas_todas.iterrows():
         label = f"Ata {num}/{ano}"
     opcoes_ata.append(label)
 
-col_sel1, col_sel2 = st.columns([2, 3])
-with col_sel1:
-    escolha = st.selectbox("Selecione a Ata", opcoes_ata, index=None, placeholder="Escolha uma ata...")
+# Selectbox em largura total (nome da ata é longo: "Ata de Registro de Preços...")
+escolha = st.selectbox("Selecione a Ata", opcoes_ata, index=None, placeholder="Escolha uma ata...")
 
 if not escolha:
     st.info("👆 Selecione uma ata para visualizar a comparação Previsto vs. Realizado.")
@@ -329,13 +392,12 @@ ata_prev = df_prev[(df_prev['Nº Ata'] == busca_ata) & (df_prev['Ano Ata'] == bu
 periodo_label = "Período completo"
 if prorrogada and dt_inicio is not None and dt_fim is not None and 'Data RC' in ata_real.columns:
     meio = dt_inicio + (dt_fim - dt_inicio) / 2
-    with col_sel2:
-        periodo = st.radio(
-            "Período de consumo (ata prorrogada)",
-            ["Completo", f"Ano 1 (até {meio.strftime('%d/%m/%Y')})", f"Ano 2 (após {meio.strftime('%d/%m/%Y')})"],
-            horizontal=True,
-            index=2 # Padrão para Ano 2
-        )
+    periodo = st.radio(
+        "Período de consumo (ata prorrogada)",
+        ["Completo", f"Ano 1 (até {meio.strftime('%d/%m/%Y')})", f"Ano 2 (após {meio.strftime('%d/%m/%Y')})"],
+        horizontal=True,
+        index=2 # Padrão para Ano 2
+    )
     if "Ano 1" in periodo:
         ata_real = ata_real[ata_real['Data RC'] <= meio]
         periodo_label = "Ano 1"
@@ -438,6 +500,16 @@ df_geral['% Consumo'] = np.where(df_geral['Métrica Prevista'] > 0, df_geral['M�
 df_geral['Material_Num'] = pd.to_numeric(df_geral['Material RC'], errors='coerce').fillna(0)
 df_geral = df_geral.sort_values('Material_Num', ascending=True).drop(columns=['Material_Num'])
 
+# Fornecedor/Marca (origem: base de homologados) para o Resumo Executivo, pela ata selecionada
+if not df_homo.empty:
+    homo_sel = df_homo[(df_homo['Nº Ata'] == busca_ata) & (df_homo['Ano Ata'] == busca_ano)].drop_duplicates('Material RC')
+    map_forn = homo_sel.set_index('Material RC')['Fornecedor'].to_dict()
+    map_marca = homo_sel.set_index('Material RC')['Marca'].to_dict()
+else:
+    map_forn, map_marca = {}, {}
+df_geral['Fornecedor'] = df_geral['Material RC'].map(map_forn).replace('', pd.NA).fillna('-')
+df_geral['Marca'] = df_geral['Material RC'].map(map_marca).replace('', pd.NA).fillna('-')
+
 # ==========================================================
 # 5.1 KPIs E RESUMO EXECUTIVO
 # ==========================================================
@@ -484,6 +556,8 @@ for _, r in df_geral.iterrows():
     <tr style="{linha_estilo}">
         <td>{r['Material RC']}</td>
         <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{r['Descrição Material RC']}">{r['Descrição Material RC'][:70]}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{r['Fornecedor']}">{r['Fornecedor']}</td>
+        <td style="text-align:center;">{r['Marca']}</td>
         <td style="text-align:center;">{r['Unidade de Medida']}</td>
         <td style="text-align:right; font-weight:bold;">{vlr_unit_str}</td>
         <td style="text-align:right;">{fmt_m.format(r['Métrica Prevista'])}</td>
@@ -500,6 +574,8 @@ tabela_geral_html = f"""
 <tr>
     <th style="padding:8px;text-align:left;">Código</th>
     <th style="padding:8px;text-align:left;">Descrição</th>
+    <th style="padding:8px;text-align:left;">Fornecedor</th>
+    <th style="padding:8px;text-align:center;">Marca</th>
     <th style="padding:8px;text-align:center;">Unid.</th>
     <th style="padding:8px;text-align:right;">Vlr. Unitário</th>
     <th style="padding:8px;text-align:right;">Total Previsto</th>

@@ -3,10 +3,20 @@
 /base_rcaf.csv
 /base_sds.xlsx
 /previstos_dashboard.csv
+/base_homologados.csv
+
+# Backups de base (cópias da produção)
+*.bak.csv
+*.bak
+
+# Relatórios/exports de auditoria (planilhas com dados de compras)
+Relatorio_*.xlsx
+Relatório_*.xlsx
 
 # --- LOGS E CHECKPOINTS (Robôs Playwright) ---
 /log_etps_processados.txt
 /log_sds_processadas.txt
+/log_rcaf_ultima_execucao.txt
 *.log
 
 # --- EXECUTÁVEL E COMPILAÇÕES (PyInstaller) ---
@@ -15,6 +25,10 @@
 /dist/
 /_internal/
 *.spec
+
+# --- WINDOWS / OS ---
+Thumbs.db
+desktop.ini
 
 # --- CACHE E AMBIENTES VIRTUAIS ---
 __pycache__/

@@ -33,9 +33,10 @@ Production data files are **gitignored**. Users copy the templates from `templat
 | File (root) | Template | Purpose |
 |---|---|---|
 | `base_etps.csv` | `templates/base_etps_template.csv` | Queue of ETP numbers to scrape |
-| `base_sds.xlsx` | `templates/base_sds_template.xlsx` | Ata metadata linked to SDs |
+| `base_sds.xlsx` | `templates/base_sds_template.xlsx` | Ata metadata linked to SDs — **objeto + validity dates** (`Assinatura da Ata`, `Vigência`, `Ata Prorrogada`). Only atas present here are treated as "managed". |
 | `base_rcaf.csv` | `templates/base_rcaf_template.csv` | RC/AF actual consumption data |
 | `previstos_dashboard.csv` | `templates/previstos_dashboard_template.csv` | Consolidated forecasted items |
+| `base_homologados.csv` | `templates/base_homologados_template.csv` | Homologated (awarded) items — filters out failed (`fracassado`) forecast items and supplies `Fornecedor`/`Marca` |
 
 The bots maintain checkpoint logs (`log_etps_processados.txt`, `log_sds_processadas.txt`) to avoid re-scraping on restart — also gitignored.
 
@@ -70,6 +71,10 @@ previstos_dashboard.csv (generated from ETPs+SDs) ──→ [app.py]
 4. **AF cancellation:** `CANCELADA` AFs are subtracted from totals before aggregation.
 
 5. **Relational join key:** `(Nº Ata, Ano Ata, Material Code, Secretaria)` — all four fields must match to link planned vs. actual data.
+
+6. **Ata validity scoping & expiry alerts (dropdown + top cards):** The ata selector lists only *managed* atas — those present in `base_sds.xlsx` (which carry `Assinatura`/`Vigência` dates) **and** currently within their validity window. This deliberately hides the ~500 consumption-only atas (e.g. the Health dept, which has its own procurement and floods `base_rcaf.csv`) that have no metadata. An "Incluir atas vencidas" checkbox re-includes expired managed atas; the list is sorted **numerically** by ata number. Three clickable alert cards at the top (`Atas Vigentes` / `A Vencer ≤ DIAS_ALERTA_VENCIMENTO days` / `Vencidas`) are computed from the validity dates and open `@st.dialog` modals listing each ata (número, descrição, início, término, dias). The whole block is guarded by a `tem_vigencia` flag and **degrades safely** to the legacy "show all atas" behavior if `base_sds` metadata is absent.
+
+   - *Clickable-card technique:* HTML markdown cards can't trigger Python callbacks, so the cards are `st.button(..., width="stretch")` styled as cards via CSS scoped to the per-key `.st-key-card_*` class (two-line label renders as two `<p>`: title + value). Reusable pattern for making cards interactive in Streamlit ≥1.31 (`st.dialog`).
 
 ### Column Normalization
 

@@ -21,6 +21,8 @@ Isso permite identificar imediatamente desvios de planejamento, itens próximos 
 *   **Valoração Unitária (Preço Praticado):** O painel adota exclusivamente o valor unitário praticado na execução financeira (RC). Itens planejados que ainda não possuam RC emitida exibem o valor unitário como um traço (`-`).
 *   **Métrica de Serviços (SV):** Para itens categorizados como "SV" (Serviço), a base de cálculo (Previsto vs. Realizado) transita automaticamente de "Quantidades" para "Valor Financeiro" (Reais).
 *   **Filtros Analíticos Combinados:** As tabelas de detalhamento suportam filtragem dinâmica e simultânea por **Código de Material** e por **Secretaria (Órgão)**.
+*   **Gestão de Vigência das Atas:** O seletor exibe apenas as atas **vigentes** sob gestão do Compras (presentes no `base_sds.xlsx`), filtrando automaticamente o ruído de centenas de atas que entram apenas pelo consumo (ex.: atas de outras pastas com compras próprio). Um *checkbox* **"Incluir atas vencidas"** reincorpora as encerradas quando necessário, e a lista é ordenada **numericamente** pelo número da ata.
+*   **Painel de Alertas de Vencimento:** Três cartões no topo resumem a carteira — **Atas Vigentes**, **A Vencer (≤ 90 dias)** e **Vencidas**. Cada cartão é **clicável** e abre uma janela (modal) com a lista detalhada das atas naquele estado: número, descrição, data de início, término e dias restantes (ou dias vencidos).
 
 ---
 

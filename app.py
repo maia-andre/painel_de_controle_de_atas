@@ -325,11 +325,65 @@ except FileNotFoundError:
     st.error("⚠️ Certifique-se de que os arquivos 'base_rcaf.csv' e 'previstos_dashboard.csv' estão no diretório.")
     st.stop()
 
+# ==========================================================
+# 3.1 VIGÊNCIA DAS ATAS — alertas de vencimento + escopo do dropdown
+# ==========================================================
+# As datas de Assinatura (início) e Vigência (término) vêm de base_sds (df_meta).
+# Só as atas gerenciadas pela administração têm esses metadados; as atas que entram
+# apenas pelo consumo (ex.: Saúde, que não conversa com o Compras) ficam de fora —
+# é justamente o ruído que removemos do dropdown.
+DIAS_ALERTA_VENCIMENTO = 90
+hoje = pd.Timestamp(datetime.now().date())
+
+vig = df_meta.copy()
+if not vig.empty:
+    vig['_ini'] = pd.to_datetime(vig.get('Assinatura'), errors='coerce')
+    vig['_fim'] = pd.to_datetime(vig.get('Vigência'), errors='coerce')
+    vig = vig.dropna(subset=['_fim'])  # sem término não há como classificar vigência
+tem_vigencia = not vig.empty
+
+if tem_vigencia:
+    vig_vigentes = vig[(vig['_ini'] <= hoje) & (vig['_fim'] >= hoje)]
+    vig_vencidas = vig[vig['_fim'] < hoje]
+    vig_a_vencer = vig_vigentes[vig_vigentes['_fim'] <= hoje + pd.Timedelta(days=DIAS_ALERTA_VENCIMENTO)]
+    n_vigentes, n_vencidas, n_a_vencer = len(vig_vigentes), len(vig_vencidas), len(vig_a_vencer)
+
+    cv1, cv2, cv3 = st.columns(3)
+    cv1.markdown(criar_card("Atas Vigentes", str(n_vigentes), "#2a9d8f"), unsafe_allow_html=True)
+    cv2.markdown(criar_card(f"A Vencer (≤ {DIAS_ALERTA_VENCIMENTO} dias)", str(n_a_vencer),
+                            "#f77f00" if n_a_vencer > 0 else "#2a9d8f"), unsafe_allow_html=True)
+    cv3.markdown(criar_card("Vencidas", str(n_vencidas),
+                            "#d62828" if n_vencidas > 0 else "#2a9d8f"), unsafe_allow_html=True)
+    st.caption(
+        f"Vigência apurada em {hoje.strftime('%d/%m/%Y')}. "
+        f"'A Vencer' conta as vigentes que vencem nos próximos {DIAS_ALERTA_VENCIMENTO} dias."
+    )
+    st.divider()
+
 # --- Montar lista de atas disponíveis ---
 atas_prev = df_prev[['Nº Ata', 'Ano Ata']].drop_duplicates()
 atas_real = df_real[['Nº Ata', 'Ano Ata']].drop_duplicates()
-atas_todas = pd.concat([atas_prev, atas_real]).drop_duplicates().sort_values(['Ano Ata', 'Nº Ata'])
+atas_todas = pd.concat([atas_prev, atas_real]).drop_duplicates()
 atas_todas = atas_todas[(atas_todas['Nº Ata'] != '') & (atas_todas['Ano Ata'] != '')]
+
+if tem_vigencia:
+    # Escopo: só atas gerenciadas (presentes em base_sds). Vigentes por padrão;
+    # checkbox revela as vencidas. Remove o ruído das atas só-consumo (ex.: Saúde).
+    incluir_vencidas = st.checkbox(
+        "Incluir atas vencidas",
+        value=False,
+        help="Por padrão o painel lista apenas atas vigentes. Marque para acessar também as já vencidas."
+    )
+    if incluir_vencidas:
+        chaves_validas = set(zip(vig['Nº Ata'], vig['Ano Ata']))            # todas gerenciadas
+    else:
+        chaves_validas = set(zip(vig_vigentes['Nº Ata'], vig_vigentes['Ano Ata']))
+    atas_todas = atas_todas[[(n, a) in chaves_validas
+                             for n, a in zip(atas_todas['Nº Ata'], atas_todas['Ano Ata'])]]
+
+# Ordenação NUMÉRICA por número da ata (evita "11 depois de 109" da ordem textual).
+atas_todas = atas_todas.assign(_num=pd.to_numeric(atas_todas['Nº Ata'], errors='coerce'))
+atas_todas = atas_todas.sort_values(['Ano Ata', '_num'])
 
 # Mapear objetos a partir de df_meta para pesquisa de palavras-chave
 dict_objetos = {}

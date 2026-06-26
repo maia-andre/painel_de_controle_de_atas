@@ -79,6 +79,8 @@ st.markdown("""
         border: none;
     }
     div[class*="st-key-card_"] button:focus:not(:active) { border: none; color: inherit; }
+    div[class*="st-key-card_"] button > div { width: 100%; justify-content: flex-start; }
+    div[class*="st-key-card_"] button [data-testid="stMarkdownContainer"] { text-align: left; }
     div[class*="st-key-card_"] button p { margin: 0; line-height: 1.2; text-align: left; }
     div[class*="st-key-card_"] button p:first-child { font-size: 0.95rem; font-weight: 700; }
     div[class*="st-key-card_"] button p:last-child  { font-size: 1.9rem;  font-weight: 800; color: #ffffff; }
@@ -410,12 +412,14 @@ if tem_vigencia:
     n_vigentes, n_vencidas, n_a_vencer = len(vig_vigentes), len(vig_vencidas), len(vig_a_vencer)
 
     titulo_avencer = f"A Vencer (≤ {DIAS_ALERTA_VENCIMENTO} dias)"
-    cv1, cv2, cv3 = st.columns(3)
-    if cv1.button(f"Atas Vigentes\n\n{n_vigentes}", key="card_vig"):
+    # gap="medium" dá espaçamento simétrico; width="stretch" faz os 3 cards
+    # preencherem suas colunas (mesmo tamanho), evitando largura "de conteúdo".
+    cv1, cv2, cv3 = st.columns(3, gap="medium")
+    if cv1.button(f"Atas Vigentes\n\n{n_vigentes}", key="card_vig", width="stretch"):
         modal_atas("Atas Vigentes", vig_vigentes, "vigentes")
-    if cv2.button(f"{titulo_avencer}\n\n{n_a_vencer}", key="card_avencer"):
+    if cv2.button(f"{titulo_avencer}\n\n{n_a_vencer}", key="card_avencer", width="stretch"):
         modal_atas(titulo_avencer, vig_a_vencer, "a_vencer")
-    if cv3.button(f"Vencidas\n\n{n_vencidas}", key="card_venc"):
+    if cv3.button(f"Vencidas\n\n{n_vencidas}", key="card_venc", width="stretch"):
         modal_atas("Vencidas", vig_vencidas, "vencidas")
     st.caption(
         f"Vigência apurada em {hoje.strftime('%d/%m/%Y')}. "

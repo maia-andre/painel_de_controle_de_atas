@@ -57,6 +57,37 @@ st.markdown("""
         margin-bottom: 16px;
         font-size: 0.9rem;
     }
+    /* --- Cards de gestão clicáveis (st.button estilizado como card) --- */
+    div[class*="st-key-card_"] button {
+        background: linear-gradient(135deg, #002d72 0%, #001a40 100%);
+        border: none;
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        padding: 16px 20px;
+        min-height: 92px;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 2px;
+        transition: transform 0.08s ease, box-shadow 0.08s ease;
+    }
+    div[class*="st-key-card_"] button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.3);
+        border: none;
+    }
+    div[class*="st-key-card_"] button:focus:not(:active) { border: none; color: inherit; }
+    div[class*="st-key-card_"] button p { margin: 0; line-height: 1.2; text-align: left; }
+    div[class*="st-key-card_"] button p:first-child { font-size: 0.95rem; font-weight: 700; }
+    div[class*="st-key-card_"] button p:last-child  { font-size: 1.9rem;  font-weight: 800; color: #ffffff; }
+    .st-key-card_vig button     { border-left: 6px solid #2a9d8f !important; }
+    .st-key-card_vig button p:first-child     { color: #58c4b4; }
+    .st-key-card_avencer button { border-left: 6px solid #f77f00 !important; }
+    .st-key-card_avencer button p:first-child { color: #f7b733; }
+    .st-key-card_venc button    { border-left: 6px solid #d62828 !important; }
+    .st-key-card_venc button p:first-child    { color: #ff7b7b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -342,21 +373,54 @@ if not vig.empty:
     vig = vig.dropna(subset=['_fim'])  # sem término não há como classificar vigência
 tem_vigencia = not vig.empty
 
+@st.dialog("Detalhe das atas", width="large")
+def modal_atas(titulo, df_estado, modo):
+    """Modal acionado pelos cards de gestão: lista nº da ata, descrição e vigência."""
+    st.markdown(f"#### {titulo}")
+    if df_estado.empty:
+        st.info("Nenhuma ata neste estado.")
+        return
+    d = df_estado.sort_values('_fim').copy()
+    tab = pd.DataFrame({
+        "Ata": d['Nº Ata'].astype(str) + "/" + d['Ano Ata'].astype(str),
+        "Descrição": d.get('Objeto', pd.Series('', index=d.index)).fillna('').astype(str).str.strip(),
+        "Início": d['_ini'].dt.strftime('%d/%m/%Y'),
+        "Término": d['_fim'].dt.strftime('%d/%m/%Y'),
+    })
+    if modo == 'vencidas':
+        tab["Vencida há (dias)"] = (hoje - d['_fim']).dt.days.values
+    else:
+        tab["Vence em (dias)"] = (d['_fim'] - hoje).dt.days.values
+    st.dataframe(
+        tab, hide_index=True, width='stretch',
+        column_config={
+            "Ata": st.column_config.TextColumn(width="small"),
+            "Descrição": st.column_config.TextColumn(width="large"),
+            "Início": st.column_config.TextColumn(width="small"),
+            "Término": st.column_config.TextColumn(width="small"),
+        },
+    )
+    st.caption(f"{len(tab)} ata(s) • apurado em {hoje.strftime('%d/%m/%Y')}")
+
+
 if tem_vigencia:
     vig_vigentes = vig[(vig['_ini'] <= hoje) & (vig['_fim'] >= hoje)]
     vig_vencidas = vig[vig['_fim'] < hoje]
     vig_a_vencer = vig_vigentes[vig_vigentes['_fim'] <= hoje + pd.Timedelta(days=DIAS_ALERTA_VENCIMENTO)]
     n_vigentes, n_vencidas, n_a_vencer = len(vig_vigentes), len(vig_vencidas), len(vig_a_vencer)
 
+    titulo_avencer = f"A Vencer (≤ {DIAS_ALERTA_VENCIMENTO} dias)"
     cv1, cv2, cv3 = st.columns(3)
-    cv1.markdown(criar_card("Atas Vigentes", str(n_vigentes), "#2a9d8f"), unsafe_allow_html=True)
-    cv2.markdown(criar_card(f"A Vencer (≤ {DIAS_ALERTA_VENCIMENTO} dias)", str(n_a_vencer),
-                            "#f77f00" if n_a_vencer > 0 else "#2a9d8f"), unsafe_allow_html=True)
-    cv3.markdown(criar_card("Vencidas", str(n_vencidas),
-                            "#d62828" if n_vencidas > 0 else "#2a9d8f"), unsafe_allow_html=True)
+    if cv1.button(f"Atas Vigentes\n\n{n_vigentes}", key="card_vig"):
+        modal_atas("Atas Vigentes", vig_vigentes, "vigentes")
+    if cv2.button(f"{titulo_avencer}\n\n{n_a_vencer}", key="card_avencer"):
+        modal_atas(titulo_avencer, vig_a_vencer, "a_vencer")
+    if cv3.button(f"Vencidas\n\n{n_vencidas}", key="card_venc"):
+        modal_atas("Vencidas", vig_vencidas, "vencidas")
     st.caption(
         f"Vigência apurada em {hoje.strftime('%d/%m/%Y')}. "
-        f"'A Vencer' conta as vigentes que vencem nos próximos {DIAS_ALERTA_VENCIMENTO} dias."
+        f"'A Vencer' conta as vigentes que vencem nos próximos {DIAS_ALERTA_VENCIMENTO} dias. "
+        f"Clique num card para ver a lista de atas."
     )
     st.divider()
 
